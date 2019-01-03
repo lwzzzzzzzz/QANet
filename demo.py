@@ -44,10 +44,10 @@ def answer():
 
 class Demo(object):
     def __init__(self, model, config):
-        run_event = threading.Event()
+        run_event = threading.Event() # 定义一个线程事件类管理线程
         run_event.set()
         threading.Thread(target=self.demo_backend, args = [model, config, run_event]).start()
-        app.run(port=8080, host='0.0.0.0')
+        app.run(port=7777, host='0.0.0.0')
         try:
             while 1:
                 sleep(.1)
