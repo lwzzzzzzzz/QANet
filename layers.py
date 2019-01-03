@@ -47,6 +47,7 @@ def noam_norm(x, epsilon=1.0, scope=None, reuse=None):
         ndims = len(shape)
         return tf.nn.l2_normalize(x, ndims - 1, epsilon=epsilon) * tf.sqrt(tf.to_float(shape[-1]))
 
+# 这个计算过程和tf.contrib.layers.layer_norm()不一样，源码实现为：tf.reduce_mean(x, axis=[1:], keep_dims=True)
 def layer_norm_compute_python(x, epsilon, scale, bias):
     """Layer norm raw computation."""
     mean = tf.reduce_mean(x, axis=[-1], keep_dims=True)
@@ -78,16 +79,18 @@ def highway(x, size = None, activation = None,
         for i in range(num_layers):
             T = conv(x, size, bias = True, activation = tf.sigmoid,
                      name = "gate_%d"%i, reuse = reuse)
-            H = conv(x, size, bias = True, activation = activation,
+            H = conv(x, size, bias = True, activation = activation, # 无activation
                      name = "activation_%d"%i, reuse = reuse)
             H = tf.nn.dropout(H, 1.0 - dropout)
             x = H * T + x * (1.0 - T)
         return x
-
-def layer_dropout(inputs, residual, dropout):
+# outputs = layer_dropout(outputs, residual, dropout * float(l) / L) # [N, PL, 1, d]
+def layer_dropout(inputs, residual, dropout): # 为什么要设计成这样，resnet不直接 out += residual ？？？？？
     pred = tf.random_uniform([]) < dropout
     return tf.cond(pred, lambda: residual, lambda: tf.nn.dropout(inputs, 1.0 - dropout) + residual)
-
+# c = residual_block(c_emb, num_blocks = 1, num_conv_layers = 4, kernel_size = 7, mask = self.c_mask,
+#                    num_filters = d, num_heads = nh, seq_len = self.c_len, scope = "Encoder_Residual_Block",
+#                    bias = False, dropout = self.dropout)
 def residual_block(inputs, num_blocks, num_conv_layers, kernel_size, mask = None,
                    num_filters = 128, input_projection = False, num_heads = 8,
                    seq_len = None, scope = "res_block", is_training = True,
@@ -97,9 +100,9 @@ def residual_block(inputs, num_blocks, num_conv_layers, kernel_size, mask = None
             inputs = conv(inputs, num_filters, name = "input_projection", reuse = reuse)
         outputs = inputs
         sublayer = 1
-        total_sublayers = (num_conv_layers + 2) * num_blocks
+        total_sublayers = (num_conv_layers + 2) * num_blocks # 表示4层conv + self-attention + 全连接
         for i in range(num_blocks):
-            outputs = add_timing_signal_1d(outputs)
+            outputs = add_timing_signal_1d(outputs) # position encoding # [N, PL, d]
             outputs, sublayer = conv_block(outputs, num_conv_layers, kernel_size, num_filters,
                 seq_len = seq_len, scope = "encoder_block_%d"%i,reuse = reuse, bias = bias,
                 dropout = dropout, sublayers = (sublayer, total_sublayers))
@@ -107,25 +110,26 @@ def residual_block(inputs, num_blocks, num_conv_layers, kernel_size, mask = None
                 scope = "self_attention_layers%d"%i, reuse = reuse, is_training = is_training,
                 bias = bias, dropout = dropout, sublayers = (sublayer, total_sublayers))
         return outputs
-
+# num_conv_layers = 4, kernel_size = 7, num_filters = d, sublayers = (1, 6)
 def conv_block(inputs, num_conv_layers, kernel_size, num_filters,
                seq_len = None, scope = "conv_block", is_training = True,
                reuse = None, bias = True, dropout = 0.0, sublayers = (1, 1)):
     with tf.variable_scope(scope, reuse = reuse):
-        outputs = tf.expand_dims(inputs,2)
+        outputs = tf.expand_dims(inputs,2) # [N, PL, 1, d] 增加一个维度是为了符合tf.nn.seprable_conv() 的API
         l, L = sublayers
         for i in range(num_conv_layers):
             residual = outputs
-            outputs = norm_fn(outputs, scope = "layer_norm_%d"%i, reuse = reuse)
+            outputs = norm_fn(outputs, scope = "layer_norm_%d"%i, reuse = reuse) # layer_norm
             if (i) % 2 == 0:
                 outputs = tf.nn.dropout(outputs, 1.0 - dropout)
             outputs = depthwise_separable_convolution(outputs,
                 kernel_size = (kernel_size, 1), num_filters = num_filters,
                 scope = "depthwise_conv_layers_%d"%i, is_training = is_training, reuse = reuse)
-            outputs = layer_dropout(outputs, residual, dropout * float(l) / L)
+            outputs = layer_dropout(outputs, residual, dropout * float(l) / L) # [N, PL, 1, d]
             l += 1
-        return tf.squeeze(outputs,2), l
+        return tf.squeeze(outputs,2), l # [N, PL, d]
 
+# num_filters = d  seq_len = self.c_len  sublayers = (5, 6)
 def self_attention_block(inputs, num_filters, seq_len, mask = None, num_heads = 8,
                          scope = "self_attention_ffn", reuse = None, is_training = True,
                          bias = True, dropout = 0.0, sublayers = (1, 1)):
@@ -161,11 +165,11 @@ def multihead_attention(queries, units, num_heads,
         # Self attention
         if memory is None:
             memory = queries
-
-        memory = conv(memory, 2 * units, name = "memory_projection", reuse = reuse)
+        # 当没有指定conv(kernel_size=?)，默认值为1，即1的conv1d卷积，就是一个全连接linear project
+        memory = conv(memory, 2 * units, name = "memory_projection", reuse = reuse) # memory --> [N, PL, 2 * units]
         query = conv(queries, units, name = "query_projection", reuse = reuse)
         Q = split_last_dimension(query, num_heads)
-        K, V = [split_last_dimension(tensor, num_heads) for tensor in tf.split(memory,2,axis = 2)]
+        K, V = [split_last_dimension(tensor, num_heads) for tensor in tf.split(memory,2,axis = 2)] # 这里实现的K V不一样，但是都是query经过线性变换得到
 
         key_depth_per_head = units // num_heads
         Q *= key_depth_per_head**-0.5
@@ -184,18 +188,18 @@ def conv(inputs, output_size, bias = None, activation = None, kernel_size = 1, n
         if len(shapes) > 4:
             raise NotImplementedError
         elif len(shapes) == 4:
-            filter_shape = [1,kernel_size,shapes[-1],output_size]
+            filter_shape = [1,kernel_size,shapes[-1],output_size] # [filter_height, filter_width, in_channels, out_channels]
             bias_shape = [1,1,1,output_size]
             strides = [1,1,1,1]
         else:
-            filter_shape = [kernel_size,shapes[-1],output_size]
+            filter_shape = [kernel_size,shapes[-1],output_size] # [filter_width, in_channels, out_channels]
             bias_shape = [1,1,output_size]
             strides = 1
         conv_func = tf.nn.conv1d if len(shapes) == 3 else tf.nn.conv2d
-        kernel_ = tf.get_variable("kernel_",
+        kernel_ = tf.get_variable("kernel_", # tf.get_variable()初始化形状为filter_shape的W，并加上l2正则，和初始化方式
                         filter_shape,
                         dtype = tf.float32,
-                        regularizer=regularizer,
+                        regularizer=regularizer, # l2正则
                         initializer = initializer_relu() if activation is not None else initializer())
         outputs = conv_func(inputs, kernel_, strides, "VALID")
         if bias:
@@ -204,7 +208,7 @@ def conv(inputs, output_size, bias = None, activation = None, kernel_size = 1, n
                         regularizer=regularizer,
                         initializer = tf.zeros_initializer())
         if activation is not None:
-            return activation(outputs)
+            return activation(outputs) # conv函数传入
         else:
             return outputs
 
@@ -219,7 +223,7 @@ def depthwise_separable_convolution(inputs, kernel_size, num_filters,
     with tf.variable_scope(scope, reuse = reuse):
         shapes = inputs.shape.as_list()
         depthwise_filter = tf.get_variable("depthwise_filter",
-                                        (kernel_size[0], kernel_size[1], shapes[-1], 1),
+                                        (kernel_size[0], kernel_size[1], shapes[-1], 1), # [ , , , 1] 3维度必定为1
                                         dtype = tf.float32,
                                         regularizer=regularizer,
                                         initializer = initializer_relu())
@@ -231,8 +235,9 @@ def depthwise_separable_convolution(inputs, kernel_size, num_filters,
         outputs = tf.nn.separable_conv2d(inputs,
                                         depthwise_filter,
                                         pointwise_filter,
-                                        strides = (1,1,1,1),
-                                        padding = "SAME")
+                                        strides = (1,1,1,1), # 可以看到inputs为# [N, PL, 1, d]，虽然2维度上为1，stride也为1，但是会自动padding成符合conv规则的形状
+                                        padding = "SAME")   # depthwise和pointwise内部，不加任何的非线性激活函数
+
         if bias:
             b = tf.get_variable("bias",
                     outputs.shape[-1],
@@ -249,13 +254,13 @@ def split_last_dimension(x, n):
     x: a Tensor with shape [..., m]
     n: an integer.
     Returns:
-    a Tensor with shape [..., n, m/n]
+    a Tensor with shape [..., n, .., m/n]
     """
     old_shape = x.get_shape().dims
     last = old_shape[-1]
     new_shape = old_shape[:-1] + [n] + [last // n if last else None]
-    ret = tf.reshape(x, tf.concat([tf.shape(x)[:-1], [n, -1]], 0))
-    ret.set_shape(new_shape)
+    ret = tf.reshape(x, tf.concat([tf.shape(x)[:-1], [n, -1]], 0)) # ret== [N, PL, n, d/n]
+    ret.set_shape(new_shape) #set_shape()不产生新的tensor  、reshape()返回新的tensor
     return tf.transpose(ret,[0,2,1,3])
 
 def dot_product_attention(q,
@@ -333,7 +338,7 @@ def add_timing_signal_1d(x, min_timescale=1.0, max_timescale=1.0e4):
     Returns:
     a Tensor the same shape as x.
     """
-    length = tf.shape(x)[1]
+    length = tf.shape(x)[1] # [N, PL, d]
     channels = tf.shape(x)[2]
     signal = get_timing_signal_1d(length, channels, min_timescale, max_timescale)
     return x + signal
@@ -501,7 +506,7 @@ def batch_dot(x, y, axes=None):
     if ndim(out) == 1:
         out = tf.expand_dims(out, 1)
     return out
-
+# optimized_trilinear_for_attention([c, q], self.c_maxlen:PL, self.q_maxlen:QL, input_keep_prob = 1.0 - self.dropout)
 def optimized_trilinear_for_attention(args, c_maxlen, q_maxlen, input_keep_prob=1.0,
     scope='efficient_trilinear',
     bias_initializer=tf.zeros_initializer(),
@@ -515,7 +520,7 @@ def optimized_trilinear_for_attention(args, c_maxlen, q_maxlen, input_keep_prob=
         raise ValueError("the last dimension of `args` must equal")
     arg_size = arg0_shape[2]
     dtype = args[0].dtype
-    droped_args = [tf.nn.dropout(arg, input_keep_prob) for arg in args]
+    droped_args = [tf.nn.dropout(arg, input_keep_prob) for arg in args] # [ [N, PL, d], [N, QL, d] ]
     with tf.variable_scope(scope):
         weights4arg0 = tf.get_variable(
             "linear_kernel4arg0", [arg_size, 1],
@@ -537,11 +542,11 @@ def optimized_trilinear_for_attention(args, c_maxlen, q_maxlen, input_keep_prob=
             dtype=dtype,
             regularizer=regularizer,
             initializer=bias_initializer)
-        subres0 = tf.tile(dot(droped_args[0], weights4arg0), [1, 1, q_maxlen])
-        subres1 = tf.tile(tf.transpose(dot(droped_args[1], weights4arg1), perm=(0, 2, 1)), [1, c_maxlen, 1])
-        subres2 = batch_dot(droped_args[0] * weights4mlu, tf.transpose(droped_args[1], perm=(0, 2, 1)))
-        res = subres0 + subres1 + subres2
-        nn_ops.bias_add(res, biases)
+        subres0 = tf.tile(dot(droped_args[0], weights4arg0), [1, 1, q_maxlen]) # dot([N, PL, d], [d, 1]) = [N, PL, 1] --> [N, PL, QL]
+        subres1 = tf.tile(tf.transpose(dot(droped_args[1], weights4arg1), perm=(0, 2, 1)), [1, c_maxlen, 1]) # dot([N, QL, d], [d, 1]) = [N, QL, 1] --> [N, 1, QL] --> [N, PL, QL]
+        subres2 = batch_dot(droped_args[0] * weights4mlu, tf.transpose(droped_args[1], perm=(0, 2, 1))) # [N, PL, d]*[1, 1, d] --> [N, PL, d] 之后 batch_dot([N, PL, d], [N, d, QL]) --> 对于本例就是矩阵乘法 [N, PL, QL]
+        res = subres0 + subres1 + subres2 # 三个不同信息的[N, PL, QL]进行加和
+        nn_ops.bias_add(res, biases) #???
         return res
 
 def trilinear(args,
