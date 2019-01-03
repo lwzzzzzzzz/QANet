@@ -24,7 +24,7 @@ def convert_idx(text, tokens):
     current = 0
     spans = []
     for token in tokens:
-        current = text.find(token, current)
+        current = text.find(token, current) # 字符串查找S.find(sub, start=None, end=None),返回被找到的第一个sub下标
         if current < 0:
             print("Token {} cannot be found".format(token))
             raise Exception()
@@ -44,25 +44,27 @@ def process_file(filename, data_type, word_counter, char_counter):
             for para in article["paragraphs"]:
                 context = para["context"].replace(
                     "''", '" ').replace("``", '" ')
-                context_tokens = word_tokenize(context)
+                context_tokens = word_tokenize(context) # ['first_word', 'second_word', ... ]
+                # [['every char of one_word'], ['every char of one_word'], ... ]
                 context_chars = [list(token) for token in context_tokens]
+                # 返回context_tokens列表中每个token在context中的起始span [(start, end), (start, end), ...]
                 spans = convert_idx(context, context_tokens)
                 for token in context_tokens:
-                    word_counter[token] += len(para["qas"])
+                    word_counter[token] += len(para["qas"]) # 某一para下每一个问题都让这个para中的词被统计一次
                     for char in token:
-                        char_counter[char] += len(para["qas"])
+                        char_counter[char] += len(para["qas"]) # 同理与char统计频率
                 for qa in para["qas"]:
-                    total += 1
+                    total += 1 # 统计总共有多少个question
                     ques = qa["question"].replace(
                         "''", '" ').replace("``", '" ')
                     ques_tokens = word_tokenize(ques)
                     ques_chars = [list(token) for token in ques_tokens]
                     for token in ques_tokens:
-                        word_counter[token] += 1
+                        word_counter[token] += 1 # 对question中的词频统计
                         for char in token:
-                            char_counter[char] += 1
+                            char_counter[char] += 1 # 对question中的char频率统计
                     y1s, y2s = [], []
-                    answer_texts = []
+                    answer_texts = [] # 收集一个question的所有answer_text
                     for answer in qa["answers"]:
                         answer_text = answer["text"]
                         answer_start = answer['answer_start']
@@ -70,15 +72,17 @@ def process_file(filename, data_type, word_counter, char_counter):
                         answer_texts.append(answer_text)
                         answer_span = []
                         for idx, span in enumerate(spans):
+                            # 当答案结束位置小于等于某个单词的开始位置，显然这个单词不是答案；同理
+                            # 当答案开始位置大于等于某个单词的结束位置，也不是答案
                             if not (answer_end <= span[0] or answer_start >= span[1]):
-                                answer_span.append(idx)
+                                answer_span.append(idx) # 答案基于整个para的编号
                         y1, y2 = answer_span[0], answer_span[-1]
                         y1s.append(y1)
                         y2s.append(y2)
                     example = {"context_tokens": context_tokens, "context_chars": context_chars, "ques_tokens": ques_tokens,
                                "ques_chars": ques_chars, "y1s": y1s, "y2s": y2s, "id": total}
                     examples.append(example)
-                    eval_examples[str(total)] = {
+                    eval_examples[str(total)] = { # eval_examples通过examples['id']来唯一索引一个example
                         "context": context, "spans": spans, "answers": answer_texts, "uuid": qa["id"]}
         random.shuffle(examples)
         print("{} questions in total".format(len(examples)))
@@ -88,21 +92,24 @@ def process_file(filename, data_type, word_counter, char_counter):
 def get_embedding(counter, data_type, limit=-1, emb_file=None, size=None, vec_size=None):
     print("Generating {} embedding...".format(data_type))
     embedding_dict = {}
+    # 将字典里的词频大于limit的词，依次记录在list中
     filtered_elements = [k for k, v in counter.items() if v > limit]
     if emb_file is not None:
         assert size is not None
         assert vec_size is not None
         with open(emb_file, "r", encoding="utf-8") as fh:
+            # 遍历每一行，找到符合要求的word-vector组合
             for line in tqdm(fh, total=size):
                 array = line.split()
-                word = "".join(array[0:-vec_size])
-                vector = list(map(float, array[-vec_size:]))
-                if word in counter and counter[word] > limit:
+                word = "".join(array[0:-vec_size]) # get word
+                vector = list(map(float, array[-vec_size:])) # get word vector
+                if word in counter and counter[word] > limit: # 对在counter中，并且大于limit的词embeding
                     embedding_dict[word] = vector
         print("{} / {} tokens have corresponding {} embedding vector".format(
             len(embedding_dict), len(filtered_elements), data_type))
     else:
         assert vec_size is not None
+        # 如果不使用GloVe，则对每一个token随机初始化一个vector
         for token in filtered_elements:
             embedding_dict[token] = [np.random.normal(
                 scale=0.1) for _ in range(vec_size)]
@@ -111,14 +118,14 @@ def get_embedding(counter, data_type, limit=-1, emb_file=None, size=None, vec_si
 
     NULL = "--NULL--"
     OOV = "--OOV--"
-    token2idx_dict = {token: idx for idx,
-                      token in enumerate(embedding_dict.keys(), 2)}
+    # 从2开始enumerate，编码embedding_dict中的词，  其中0：--NULL--   1：--OOV--
+    token2idx_dict = {token: idx for idx, token in enumerate(embedding_dict.keys(), 2)}
     token2idx_dict[NULL] = 0
     token2idx_dict[OOV] = 1
     embedding_dict[NULL] = [0. for _ in range(vec_size)]
     embedding_dict[OOV] = [0. for _ in range(vec_size)]
-    idx2emb_dict = {idx: embedding_dict[token]
-                    for token, idx in token2idx_dict.items()}
+    # 根据token2idx_dict，生成idx --> token对应的emb_dict，再将idx转化为emb_mat矩阵的行下标。
+    idx2emb_dict = {idx: embedding_dict[token] for token, idx in token2idx_dict.items()}
     emb_mat = [idx2emb_dict[idx] for idx in range(len(idx2emb_dict))]
     return emb_mat, token2idx_dict
 
@@ -204,9 +211,11 @@ def build_features(config, examples, data_type, out_file, word2idx_dict, char2id
         total_ += 1
 
         if filter_func(example, is_test):
+            #如果满足条件，这处理；否则跳过，进行下一个example
             continue
 
-        total += 1
+        total += 1 # 满足条件的example + 1
+        # 用0初始化所有的单词 --> 数字的矩阵
         context_idxs = np.zeros([para_limit], dtype=np.int32)
         context_char_idxs = np.zeros([para_limit, char_limit], dtype=np.int32)
         ques_idxs = np.zeros([ques_limit], dtype=np.int32)
@@ -215,11 +224,13 @@ def build_features(config, examples, data_type, out_file, word2idx_dict, char2id
         y2 = np.zeros([para_limit], dtype=np.float32)
 
         def _get_word(word):
+            # 对一个单词的lower(), capitalize(), upper()认为是不同的词，如果word本身找不到，就找word.lower()，以此类推
+            # 都找不到，则返回1表示--OOV--
             for each in (word, word.lower(), word.capitalize(), word.upper()):
                 if each in word2idx_dict:
                     return word2idx_dict[each]
             return 1
-
+        # 同理与_get_word()
         def _get_char(char):
             if char in char2idx_dict:
                 return char2idx_dict[char]
@@ -233,7 +244,7 @@ def build_features(config, examples, data_type, out_file, word2idx_dict, char2id
 
         for i, token in enumerate(example["context_chars"]):
             for j, char in enumerate(token):
-                if j == char_limit:
+                if j == char_limit: # 对于char长度大于char_limit的，后面的直接丢弃
                     break
                 context_char_idxs[i, j] = _get_char(char)
 
@@ -258,6 +269,7 @@ def build_features(config, examples, data_type, out_file, word2idx_dict, char2id
         writer.write(record.SerializeToString())
     print("Built {} / {} instances of features in total".format(total, total_))
     meta["total"] = total
+    # 将处理好的数据保存在TFRecords里，并返回共有多少条数据
     writer.close()
     return meta
 
@@ -270,6 +282,7 @@ def save(filename, obj, message=None):
 
 
 def prepro(config):
+    # 虽然precess_file()没有返回word_counter和char_counter，但两个字典都被更新了
     word_counter, char_counter = Counter(), Counter()
     train_examples, train_eval = process_file(
         config.train_file, "train", word_counter, char_counter)
@@ -294,7 +307,7 @@ def prepro(config):
                               config.dev_record_file, word2idx_dict, char2idx_dict)
     test_meta = build_features(config, test_examples, "test",
                                config.test_record_file, word2idx_dict, char2idx_dict, is_test=True)
-
+    # 保存word/char emb矩阵 & word/char2idx字典；eval数据；meta数据
     save(config.word_emb_file, word_emb_mat, message="word embedding")
     save(config.char_emb_file, char_emb_mat, message="char embedding")
     save(config.train_eval_file, train_eval, message="train eval")
