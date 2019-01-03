@@ -43,6 +43,7 @@ def get_record_parser(config, is_test=False):
 
 def get_batch_dataset(record_file, parser, config):
     num_threads = tf.constant(config.num_threads, dtype=tf.int32)
+    # tf.data.TFRecordDataset(record_file)创建了一个Dataset类，通过Dataset.map(parser)将tfrecord丢到解析器里解析
     dataset = tf.data.TFRecordDataset(record_file).map(
         parser, num_parallel_calls=num_threads).shuffle(config.capacity).repeat()
     if config.is_bucket:
@@ -80,8 +81,8 @@ def convert_tokens(eval_file, qa_id, pp1, pp2):
         uuid = eval_file[str(qid)]["uuid"]
         start_idx = spans[p1][0]
         end_idx = spans[p2][1]
-        answer_dict[str(qid)] = context[start_idx: end_idx]
-        remapped_dict[uuid] = context[start_idx: end_idx]
+        answer_dict[str(qid)] = context[start_idx: end_idx] # answer字典返回 一个batch的{q_id : answer_str} q_id为eval文件的1，2，3...这些
+        remapped_dict[uuid] = context[start_idx: end_idx] # remapped字典返回 一个batch的{uuid : answer_str}
     return answer_dict, remapped_dict
 
 
@@ -89,7 +90,7 @@ def evaluate(eval_file, answer_dict):
     f1 = exact_match = total = 0
     for key, value in answer_dict.items():
         total += 1
-        ground_truths = eval_file[key]["answers"]
+        ground_truths = eval_file[key]["answers"] # 多个参考答案
         prediction = value
         exact_match += metric_max_over_ground_truths(
             exact_match_score, prediction, ground_truths)
@@ -103,17 +104,17 @@ def evaluate(eval_file, answer_dict):
 def normalize_answer(s):
 
     def remove_articles(text):
-        return re.sub(r'\b(a|an|the)\b', ' ', text)
+        return re.sub(r'\b(a|an|the)\b', ' ', text) # r前缀表示消除转义字符  并将a|an|the用空格替换
 
     def white_space_fix(text):
-        return ' '.join(text.split())
+        return ' '.join(text.split()) # 把\t \n space这种分隔符，都变成空格  //把上一步re操作产生的多个连着的空格变成一个
 
     def remove_punc(text):
         exclude = set(string.punctuation)
-        return ''.join(ch for ch in text if ch not in exclude)
+        return ''.join(ch for ch in text if ch not in exclude) # 去string.punctuation中出现的标点
 
     def lower(text):
-        return text.lower()
+        return text.lower() # 变小写
 
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
@@ -139,5 +140,5 @@ def metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
     scores_for_ground_truths = []
     for ground_truth in ground_truths:
         score = metric_fn(prediction, ground_truth)
-        scores_for_ground_truths.append(score)
-    return max(scores_for_ground_truths)
+        scores_for_ground_truths.append(score) # prediction和多个ground_truth对比后的bool集合
+    return max(scores_for_ground_truths) # 如果有完全相同的就，返回True，即1
