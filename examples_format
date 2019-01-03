@@ -1,0 +1,8 @@
+[{"context_tokens": ['context's first_word', 'context's second_word', ... ],
+  "context_chars": [['context's every char of first_word'], ['context's every char of first_word'], ... ],
+  "ques_tokens": ['question's first_word', 'question's second_word', ... ],
+  "ques_chars": [['question's every char of first_word'], ['question's every char of second_word'], ... ],
+  "y1s": [int第first答案在context中的开始位置, second, third ],
+  "y2s": [int第first答案在context中的结束位置, second, third ],
+  "id": int(用来索引eval_example)},
+ {...},...]
