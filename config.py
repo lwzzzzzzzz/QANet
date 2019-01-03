@@ -141,4 +141,5 @@ def main(_):
 
 
 if __name__ == "__main__":
+    # tf.app.run()会自动调用main(_)函数
     tf.app.run()
